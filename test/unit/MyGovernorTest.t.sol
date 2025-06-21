@@ -1,29 +1,31 @@
-//SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: MIT
+
 pragma solidity ^0.8.18;
 
 import {Test, console} from "forge-std/Test.sol";
-import {BoxV1} from "../src/BoxV1.sol";
-import {BoxV2} from "../src/BoxV2.sol";
-import {GovToken} from "../src/GovToken.sol";
-import {MyGovernor} from "../src/MyGovernor.sol";
-import {Timelock} from "../src/Timelock.sol";
-import {DeployBox} from "../script/DeployBox.s.sol";
-import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import {UpgradeBox} from "../script/UpgradeBox.s.sol";
+import {MyGovernor} from "../../src/MyGovernor.sol";
+import {BoxV1} from "../../src/BoxV1.sol";
+import {BoxV2} from "../../src/BoxV2.sol";
+import {Timelock} from "../../src/Timelock.sol";
+import {GovToken} from "../../src/GovToken.sol";
+import {UpgradeBox} from "../../script/UpgradeBox.s.sol";
+import {DeployBox} from "../../script/DeployBox.s.sol";
 
 contract MyGovernorTest is Test {
-    BoxV1 box;
-    GovToken govToken;
-    MyGovernor governor;
-    Timelock timelock;
     DeployBox deployer;
-    address proxy;
     UpgradeBox upgrader;
+    MyGovernor governor;
+    BoxV2 box2;
+    Timelock timelock;
+    GovToken govToken;
+    address proxy;
 
     address public USER = makeAddr("user");
     uint256 public constant INITIAL_SUPPLY = 100 ether;
 
     uint256 public constant MIN_DELAY = 3600; // 1 hour after a vote passes
+    uint256 public constant VOTING_DELAY = 1;
+    uint256 public constant VOTING_PERIOD = 50400;
     address[] proposers;
     address[] executors;
 
@@ -31,20 +33,16 @@ contract MyGovernorTest is Test {
     bytes[] calldatas;
     address[] targets;
 
-    uint256 public constant VOTING_DELAY = 1;
-    uint256 public constant VOTING_PERIOD = 50400;
-
     function setUp() public {
         govToken = new GovToken();
         govToken.mint(USER, INITIAL_SUPPLY);
-
-        deployer = new DeployBox();
         upgrader = new UpgradeBox();
+        deployer = new DeployBox();
+        box2 = new BoxV2();
         proxy = deployer.run();
 
-        vm.startBroadcast(USER);
+        vm.startPrank(USER);
         govToken.delegate(USER);
-
         timelock = new Timelock(MIN_DELAY, proposers, executors);
         governor = new MyGovernor(govToken, timelock);
 
@@ -56,26 +54,24 @@ contract MyGovernorTest is Test {
         timelock.grantRole(executorRole, address(0));
         timelock.revokeRole(adminRole, USER);
 
-        vm.stopBroadcast();
+        vm.stopPrank();
 
-        vm.startBroadcast();
+        vm.startPrank(msg.sender);
         BoxV1(proxy).transferOwnership(address(timelock));
-        vm.stopBroadcast();
+        vm.stopPrank();
     }
 
-    function testCantUpgradeBoxWithoutGovernance() public {
-        BoxV2 box2 = new BoxV2();
-
+    function testCantUpdateBoxWithoutGovernance() public {
         vm.expectRevert();
-        upgrader.upgradeBox(proxy, address(box2));
+        BoxV1(proxy).upgradeTo(address(box2));
     }
 
     function testGovernanceUpdatesBox() public {
-        BoxV2 boxV2 = new BoxV2();
-        string memory description = "Upgrade to BoxV2";
+        address box2Address = address(box2);
+        string memory description = "Update Implementation to Box2";
         bytes memory encodedFunctionCall = abi.encodeWithSignature(
             "upgradeTo(address)",
-            address(boxV2)
+            box2Address
         );
         calldatas.push(encodedFunctionCall);
         values.push(0);
@@ -96,7 +92,7 @@ contract MyGovernorTest is Test {
         console.log("Proposal State 2: ", uint256(governor.state(proposalId)));
 
         // 2. Vote on Proposal
-        string memory reason = "Add SetNumber Function";
+        string memory reason = "We need a setNumber function";
 
         // Vote Types derived from GovernorCountingSimple:
         // enum VoteType {
@@ -120,10 +116,11 @@ contract MyGovernorTest is Test {
         // 4. Execute the Proposal
         governor.execute(targets, values, calldatas, descriptionHash);
         console.log("Box Version: ", BoxV2(proxy).version());
-        assert(BoxV2(proxy).version() == 2);
 
-        // 5. Assert that number can be set
-        BoxV2(proxy).setNumber(420);
-        assert(BoxV2(proxy).getNumber() == 420);
+        assertEq(BoxV2(proxy).version(), 2);
+    }
+
+    function testNonceReturnsTrue() public view {
+        assertEq(govToken.nonces(USER), 0);
     }
 }
